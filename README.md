@@ -13,9 +13,8 @@ Key actions
 
 Merging behavior
 - Adds a clean header per file, e.g.
-  ╭──────────────╮
-  │ @src/main.js │
-  ╰──────────────╯
+<img width="130" height="54" alt="image" src="https://github.com/user-attachments/assets/79ab240d-a065-4e47-8c21-af35b1caf542" />
+
 - Strips blank lines; files that become empty are skipped
 - Tracked and Global merged outputs are separate and live-update on edit/save
 
