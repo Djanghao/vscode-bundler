@@ -2,7 +2,7 @@
   "name": "bundler",
   "displayName": "Bundler",
   "description": "Track and merge multiple files into a single view for easy copying to LLMs",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "publisher": "djanghao",
   "license": "MIT",
   "repository": {

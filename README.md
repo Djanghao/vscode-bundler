@@ -13,6 +13,7 @@ Key actions
 
 Merging behavior
 - Adds a clean header per file, e.g.
+
 <img width="130" height="54" alt="image" src="https://github.com/user-attachments/assets/79ab240d-a065-4e47-8c21-af35b1caf542" />
 
 - Strips blank lines; files that become empty are skipped
@@ -24,11 +25,14 @@ Usage
 3) Click an item to compare with its merged output (diff tab)
 4) Use the title buttons to clear or open the live merged document
 
+<img width="1280" height="695" alt="image" src="https://github.com/user-attachments/assets/713bcaa3-83b9-454b-b1c8-df5439784550" />
+
+
 Build / Install (VSIX)
 ```bash
 npm i -g @vscode/vsce
 vsce package
-code --install-extension bundler-1.0.0.vsix
+code --install-extension bundler-1.0.2.vsix
 ```
 
 Requirements
