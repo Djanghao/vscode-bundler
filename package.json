@@ -1,0 +1,157 @@
+{
+  "name": "bundler",
+  "displayName": "Bundler",
+  "description": "Track and merge multiple files into a single view for easy copying to LLMs",
+  "version": "1.0.0",
+  "publisher": "djanghao",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/djanghao/bundler-vscode"
+  },
+  "icon": "media/icon.png",
+  "engines": {
+    "vscode": "^1.60.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onView:bundlerGlobal",
+    "onView:bundlerTracked"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "bundler.addToTrackList",
+        "title": "Add to Bundler Track List",
+        "icon": "$(plus)"
+      },
+      {
+        "command": "bundler.clearTrackList",
+        "title": "Clear All",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "bundler.openMergedVirtual",
+        "title": "Open Merged (Live)",
+        "icon": "$(preview)"
+      },
+      {
+        "command": "bundler.openWithMerged",
+        "title": "Open With Merged",
+        "icon": "$(split-horizontal)"
+      },
+      {
+        "command": "bundler.removeTracked",
+        "title": "Remove from Tracked",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "bundler.addToGlobalList",
+        "title": "Add to Bundler Global",
+        "icon": "$(add)"
+      },
+      {
+        "command": "bundler.removeGlobal",
+        "title": "Remove from Global",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "bundler.addGlobalFile",
+        "title": "Add Global File",
+        "icon": "$(new-file)"
+      },
+      {
+        "command": "bundler.openGlobalMergedVirtual",
+        "title": "Open Global Merged (Live)",
+        "icon": "$(preview)"
+      },
+      {
+        "command": "bundler.copyGlobalFile",
+        "title": "Copy Global File",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "bundler.clearGlobalList",
+        "title": "Clear Global",
+        "icon": "$(clear-all)"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "when": "resourceScheme == file",
+          "command": "bundler.addToTrackList",
+          "group": "7_modification"
+        },
+        {
+          "when": "resourceScheme == file",
+          "command": "bundler.addToGlobalList",
+          "group": "7_modification"
+        }
+      ],
+      "view/title": [
+        { "command": "bundler.clearTrackList", "when": "view == bundlerTracked", "group": "navigation@2" },
+        { "command": "bundler.openMergedVirtual", "when": "view == bundlerTracked", "group": "navigation@3" },
+        { "command": "bundler.addGlobalFile", "when": "view == bundlerGlobal", "group": "navigation@1" },
+        { "command": "bundler.clearGlobalList", "when": "view == bundlerGlobal", "group": "navigation@2" },
+        { "command": "bundler.openGlobalMergedVirtual", "when": "view == bundlerGlobal", "group": "navigation@3" }
+      ],
+      "view/item/context": [
+        {
+          "command": "bundler.openWithMerged",
+          "when": "view == bundlerTracked && viewItem == bundlerTrackedItem",
+          "group": "inline@1"
+        },
+        {
+          "command": "bundler.removeTracked",
+          "when": "view == bundlerTracked && viewItem == bundlerTrackedItem",
+          "group": "inline@2"
+        },
+        {
+          "command": "bundler.openWithMerged",
+          "when": "view == bundlerGlobal && viewItem == bundlerGlobalItem",
+          "group": "inline@1"
+        },
+        {
+          "command": "bundler.removeGlobal",
+          "when": "view == bundlerGlobal && viewItem == bundlerGlobalItem",
+          "group": "inline@2"
+        },
+        {
+          "command": "bundler.copyGlobalFile",
+          "when": "view == bundlerGlobal && viewItem == bundlerGlobalItem",
+          "group": "inline@2"
+        }
+      ]
+    },
+    "views": {
+      "explorer": [
+        {
+          "id": "bundlerTracked",
+          "name": "Tracked Files"
+        },
+        {
+          "id": "bundlerGlobal",
+          "name": "Global Files"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package",
+    "reinstall": "npm run compile && npm run package && code --uninstall-extension djanghao.bundler || true && code --install-extension $(ls -t *.vsix | head -n1)"
+  },
+  "devDependencies": {
+    "@types/node": "^16.x",
+    "@types/vscode": "^1.60.0",
+    "typescript": "^4.4.3",
+    "@vscode/vsce": "^2.19.0"
+  },
+  "dependencies": {}
+}

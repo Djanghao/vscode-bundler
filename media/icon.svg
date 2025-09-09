@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Background made from ONLY these four colors:
+     TL: #00ccffff  TR: #ffd135  BR: #df7e91  BL: #8fe934ff
+     TL: #ffd135  TR: #df7e91  BR: #8fe934ff  BL: #00ccffff
+     Each block uses the exact same radial setup (same radius/opacity curve). -->
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none"
+     xmlns="http://www.w3.org/2000/svg" shape-rendering="geometricPrecision">
+
+  <defs>
+    <!-- Rounded-square clip so nothing bleeds outside -->
+    <clipPath id="rrect">
+      <rect x="40" y="40" width="432" height="432" rx="112" ry="112"/>
+    </clipPath>
+
+    <!-- Identical radial gradients; only the color changes -->
+    <radialGradient id="gTL" gradientUnits="userSpaceOnUse"
+                    cx="0" cy="0" r="1"
+                    gradientTransform="translate(140 140) scale(240)">
+      <stop offset="0" stop-color="#00ccffff" stop-opacity="1"/>
+      <stop offset="1" stop-color="#00ccffff" stop-opacity="0"/>
+    </radialGradient>
+
+    <radialGradient id="gTR" gradientUnits="userSpaceOnUse"
+                    cx="0" cy="0" r="1"
+                    gradientTransform="translate(372 140) scale(240)">
+      <stop offset="0" stop-color="#ffd135" stop-opacity="1"/>
+      <stop offset="1" stop-color="#ffd135" stop-opacity="0"/>
+    </radialGradient>
+
+    <radialGradient id="gBR" gradientUnits="userSpaceOnUse"
+                    cx="0" cy="0" r="1"
+                    gradientTransform="translate(372 372) scale(240)">
+      <stop offset="0" stop-color="#df7e91" stop-opacity="1"/>
+      <stop offset="1" stop-color="#df7e91" stop-opacity="0"/>
+    </radialGradient>
+
+    <radialGradient id="gBL" gradientUnits="userSpaceOnUse"
+                    cx="0" cy="0" r="1"
+                    gradientTransform="translate(140 372) scale(240)">
+      <stop offset="0" stop-color="#8fe934ff" stop-opacity="1"/>
+      <stop offset="1" stop-color="#8fe934ff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Four equal blocks; palette uses ONLY the four colors above -->
+  <g clip-path="url(#rrect)">
+    <circle cx="140" cy="140" r="260" fill="url(#gTL)"/>
+    <circle cx="372" cy="140" r="260" fill="url(#gTR)"/>
+    <circle cx="372" cy="372" r="260" fill="url(#gBR)"/>
+    <circle cx="140" cy="372" r="260" fill="url(#gBL)"/>
+  </g>
+</svg>

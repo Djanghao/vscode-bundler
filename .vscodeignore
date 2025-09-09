@@ -1,0 +1,12 @@
+.git/
+.github/
+.vscode/
+node_modules/
+src/
+docs/
+tsconfig.json
+**/*.ts
+**/*.tsbuildinfo
+bundler-*.vsix
+*.log
+.DS_Store

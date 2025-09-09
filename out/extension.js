@@ -1,0 +1,506 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.deactivate = exports.activate = void 0;
+const vscode = require("vscode");
+const fs = require("fs");
+const path = require("path");
+function activate(context) {
+    const trackedProvider = new BundlerTrackedProvider(context);
+    const mergedVirtualProvider = new MergedContentProvider(context);
+    const globalProvider = new BundlerGlobalProvider(context);
+    const globalMergedVirtualProvider = new GlobalMergedContentProvider(context);
+    const dnd = new BundlerTrackedDnD(context, () => refreshAll());
+    const trackedView = vscode.window.createTreeView('bundlerTracked', { treeDataProvider: trackedProvider, dragAndDropController: dnd, canSelectMany: true });
+    const globalDnd = new BundlerGlobalDnD(context, () => refreshAll());
+    const globalView = vscode.window.createTreeView('bundlerGlobal', { treeDataProvider: globalProvider, dragAndDropController: globalDnd, canSelectMany: true });
+    context.subscriptions.push(trackedView, dnd, globalView, globalDnd);
+    const refreshAll = () => {
+        trackedProvider.refresh();
+        globalProvider.refresh();
+        mergedVirtualProvider.refresh();
+        globalMergedVirtualProvider.refresh();
+        try {
+            const trackedCount = context.workspaceState.get('trackedFiles', []).length;
+            const globalCount = context.globalState.get('globalFiles', []).length;
+            trackedView.description = trackedCount ? `${trackedCount}` : undefined;
+            globalView.description = globalCount ? `${globalCount}` : undefined;
+        }
+        catch { }
+    };
+    // Register virtual document providers for merged content
+    context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider('bundler', mergedVirtualProvider));
+    context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider('bundler-global', globalMergedVirtualProvider));
+    // Add current file or selected file from explorer
+    context.subscriptions.push(vscode.commands.registerCommand('bundler.addToTrackList', async (uri, uris) => {
+        const files = new Set();
+        if (uris && Array.isArray(uris)) {
+            for (const u of uris)
+                if (u && u.scheme === 'file')
+                    files.add(u.fsPath);
+        }
+        if (uri && uri.scheme === 'file')
+            files.add(uri.fsPath);
+        if (files.size === 0) {
+            const editor = vscode.window.activeTextEditor;
+            if (editor)
+                files.add(editor.document.uri.fsPath);
+        }
+        if (files.size === 0)
+            return;
+        const list = context.workspaceState.get('trackedFiles', []);
+        let changed = false;
+        for (const fp of files) {
+            const ws = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(fp));
+            if (!ws)
+                continue;
+            if (!list.includes(fp)) {
+                list.push(fp);
+                changed = true;
+            }
+        }
+        if (changed) {
+            await context.workspaceState.update('trackedFiles', list);
+            refreshAll();
+        }
+    }));
+    // Add to global from Explorer (multi-select supported)
+    context.subscriptions.push(vscode.commands.registerCommand('bundler.addToGlobalList', async (uri, uris) => {
+        const files = new Set();
+        if (uris && Array.isArray(uris))
+            for (const u of uris)
+                if (u?.scheme === 'file')
+                    files.add(u.fsPath);
+        if (uri?.scheme === 'file')
+            files.add(uri.fsPath);
+        if (files.size === 0)
+            return;
+        const list = context.globalState.get('globalFiles', []);
+        let changed = false;
+        for (const fp of files)
+            if (!list.includes(fp)) {
+                list.push(fp);
+                changed = true;
+            }
+        if (changed) {
+            await context.globalState.update('globalFiles', list);
+            refreshAll();
+        }
+    }));
+    // Add Global File (create a new file under global storage and open it)
+    context.subscriptions.push(vscode.commands.registerCommand('bundler.addGlobalFile', async () => {
+        const name = await vscode.window.showInputBox({ prompt: 'Global file name (e.g. notes.md)', value: 'untitled.md' });
+        if (!name)
+            return;
+        const dir = path.join(context.globalStorageUri.fsPath, 'global');
+        try {
+            fs.mkdirSync(dir, { recursive: true });
+        }
+        catch { }
+        let base = name.trim();
+        if (!base)
+            base = 'untitled.md';
+        let filePath = path.join(dir, base);
+        if (fs.existsSync(filePath)) {
+            const p = path.parse(base);
+            let i = 1;
+            while (fs.existsSync(filePath)) {
+                filePath = path.join(dir, `${p.name}-${i}${p.ext}`);
+                i++;
+            }
+        }
+        fs.writeFileSync(filePath, '', 'utf8');
+        const list = context.globalState.get('globalFiles', []);
+        if (!list.includes(filePath))
+            await context.globalState.update('globalFiles', [...list, filePath]);
+        refreshAll();
+        const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
+        await vscode.window.showTextDocument(doc, { preview: false });
+    }));
+    // Removed: addFiles (use Explorer > context menu > Add to Bundler Track List)
+    // Clear all tracked files and clear output file content
+    context.subscriptions.push(vscode.commands.registerCommand('bundler.clearTrackList', async () => {
+        await context.workspaceState.update('trackedFiles', []);
+        const outputFile = context.workspaceState.get('outputFile', '');
+        if (outputFile) {
+            try {
+                fs.writeFileSync(outputFile, '', 'utf8');
+            }
+            catch { }
+        }
+        refreshAll();
+    }));
+    // Removed: copyAll (Copy Merged)
+    // Open merged virtual document in editor (from Tracked Files view title)
+    context.subscriptions.push(vscode.commands.registerCommand('bundler.openMergedVirtual', async () => {
+        const uri = mergedVirtualProvider.uri;
+        const doc = await vscode.workspace.openTextDocument(uri);
+        await vscode.window.showTextDocument(doc, { preview: false });
+    }));
+    // Open diff-style view: left = file, right = appropriate merged (tracked or global); reveal corresponding sections
+    context.subscriptions.push(vscode.commands.registerCommand('bundler.openWithMerged', async (arg) => {
+        const fp = getFilePathFromArg(arg);
+        if (!fp)
+            return;
+        try {
+            // Close any existing merged diff tabs to keep one at a time
+            await closeExistingMergedDiffs([mergedVirtualProvider.uri, globalMergedVirtualProvider.uri]);
+            const globalList = context.globalState.get('globalFiles', []);
+            const useGlobal = globalList.includes(fp);
+            const rightUri = useGlobal ? globalMergedVirtualProvider.uri : mergedVirtualProvider.uri;
+            // Prepare merged content and compute target on right
+            if (useGlobal)
+                globalMergedVirtualProvider.refresh();
+            else
+                mergedVirtualProvider.refresh();
+            const mergedDoc = await vscode.workspace.openTextDocument(rightUri);
+            const rel = getRelativePath(fp);
+            const marker = `│ @${rel} │`;
+            const text = mergedDoc.getText();
+            const idx = text.indexOf(marker);
+            const targetLine = idx >= 0 ? mergedDoc.positionAt(idx).line : 0;
+            const left = vscode.Uri.file(fp);
+            const right = rightUri;
+            const title = `${path.basename(fp)} ↔ ${useGlobal ? 'Global' : 'Merged'}`;
+            await vscode.commands.executeCommand('vscode.diff', left, right, title, { preview: false, preserveFocus: false });
+            // Reveal both sides to their corresponding starts for this file (use editors directly for accuracy)
+            await delay(150);
+            const leftEditor = vscode.window.visibleTextEditors.find(e => e.document.uri.toString() === left.toString());
+            const rightEditor = vscode.window.visibleTextEditors.find(e => e.document.uri.toString() === right.toString());
+            if (rightEditor) {
+                const posR = new vscode.Position(targetLine, 0);
+                rightEditor.revealRange(new vscode.Range(posR, posR), vscode.TextEditorRevealType.AtTop);
+            }
+            if (leftEditor) {
+                const posL = new vscode.Position(0, 0);
+                leftEditor.revealRange(new vscode.Range(posL, posL), vscode.TextEditorRevealType.AtTop);
+            }
+        }
+        catch (e) {
+            console.error('Failed to open file with merged side-by-side:', e);
+        }
+    }));
+    // Removed: copyFile (per-item)
+    // Remove from tracked
+    context.subscriptions.push(vscode.commands.registerCommand('bundler.removeTracked', async (arg) => {
+        const fp = getFilePathFromArg(arg);
+        if (!fp)
+            return;
+        const list = context.workspaceState.get('trackedFiles', []);
+        const next = list.filter(f => f !== fp);
+        await context.workspaceState.update('trackedFiles', next);
+        refreshAll();
+    }));
+    // Move item up/down (reorder)
+    // Up/Down commands removed — drag-and-drop sorting only
+    // Remove from global
+    context.subscriptions.push(vscode.commands.registerCommand('bundler.removeGlobal', async (arg) => {
+        const fp = getFilePathFromArg(arg);
+        if (!fp)
+            return;
+        const list = context.globalState.get('globalFiles', []);
+        const next = list.filter(f => f !== fp);
+        await context.globalState.update('globalFiles', next);
+        refreshAll();
+    }));
+    // Clear all global files
+    context.subscriptions.push(vscode.commands.registerCommand('bundler.clearGlobalList', async () => {
+        await context.globalState.update('globalFiles', []);
+        refreshAll();
+    }));
+    // Open global merged (live)
+    context.subscriptions.push(vscode.commands.registerCommand('bundler.openGlobalMergedVirtual', async () => {
+        const uri = globalMergedVirtualProvider.uri;
+        const doc = await vscode.workspace.openTextDocument(uri);
+        await vscode.window.showTextDocument(doc, { preview: false });
+    }));
+    // Live updates when tracked/global files change in editor
+    context.subscriptions.push(vscode.workspace.onDidChangeTextDocument(e => {
+        const tracked = context.workspaceState.get('trackedFiles', []);
+        const global = context.globalState.get('globalFiles', []);
+        const fp = e.document.uri.fsPath;
+        if (tracked.includes(fp))
+            mergedVirtualProvider.refresh();
+        if (global.includes(fp))
+            globalMergedVirtualProvider.refresh();
+    }), vscode.workspace.onDidSaveTextDocument(doc => {
+        const tracked = context.workspaceState.get('trackedFiles', []);
+        const global = context.globalState.get('globalFiles', []);
+        const fp = doc.uri.fsPath;
+        if (tracked.includes(fp))
+            mergedVirtualProvider.refresh();
+        if (global.includes(fp))
+            globalMergedVirtualProvider.refresh();
+    }));
+}
+exports.activate = activate;
+class TrackedTreeItem extends vscode.TreeItem {
+    constructor(filePath) {
+        super(path.basename(filePath));
+        this.filePath = filePath;
+        this.resourceUri = vscode.Uri.file(filePath);
+        this.description = getRelativePath(filePath);
+        this.tooltip = filePath;
+        this.contextValue = 'bundlerTrackedItem';
+        // Default click opens diff view (left: file, right: merged)
+        this.command = { command: 'bundler.openWithMerged', title: 'Open With Merged', arguments: [filePath] };
+        this.iconPath = vscode.ThemeIcon.File;
+    }
+}
+class BundlerTrackedProvider {
+    constructor(_context) {
+        this._context = _context;
+        this._emitter = new vscode.EventEmitter();
+        this.onDidChangeTreeData = this._emitter.event;
+    }
+    refresh() { this._emitter.fire(); }
+    getTreeItem(e) { return e; }
+    getChildren() {
+        const list = this._context.workspaceState.get('trackedFiles', []);
+        return Promise.resolve(list.map(f => new TrackedTreeItem(f)));
+    }
+}
+class GlobalTreeItem extends vscode.TreeItem {
+    constructor(filePath) {
+        super(path.basename(filePath));
+        this.filePath = filePath;
+        this.resourceUri = vscode.Uri.file(filePath);
+        this.description = getRelativePath(filePath);
+        this.tooltip = filePath;
+        this.contextValue = 'bundlerGlobalItem';
+        this.command = { command: 'bundler.openWithMerged', title: 'Open With Merged', arguments: [filePath] };
+        this.iconPath = vscode.ThemeIcon.File;
+    }
+}
+class BundlerGlobalProvider {
+    constructor(_context) {
+        this._context = _context;
+        this._emitter = new vscode.EventEmitter();
+        this.onDidChangeTreeData = this._emitter.event;
+    }
+    refresh() { this._emitter.fire(); }
+    getTreeItem(e) { return e; }
+    getChildren() {
+        const list = this._context.globalState.get('globalFiles', []);
+        return Promise.resolve(list.map(f => new GlobalTreeItem(f)));
+    }
+}
+class BundlerTrackedDnD {
+    constructor(_context, _refresh) {
+        this._context = _context;
+        this._refresh = _refresh;
+        this.dropMimeTypes = [
+            `application/vnd.code.tree.bundlerTracked`
+        ];
+        this.dragMimeTypes = [
+            `application/vnd.code.tree.bundlerTracked`
+        ];
+    }
+    dispose() { }
+    handleDrag(source, dataTransfer, _token) {
+        dataTransfer.set('application/vnd.code.tree.bundlerTracked', new vscode.DataTransferItem(source));
+    }
+    async handleDrop(target, dataTransfer, _token) {
+        const item = dataTransfer.get('application/vnd.code.tree.bundlerTracked');
+        if (!item)
+            return;
+        const dragged = item.value;
+        if (!dragged || dragged.length === 0)
+            return;
+        const list = this._context.workspaceState.get('trackedFiles', []);
+        const draggedPaths = dragged.map(d => d.filePath);
+        // Remove dragged from list (preserve order of remaining)
+        const remaining = list.filter(p => !draggedPaths.includes(p));
+        let insertIndex = typeof target?.filePath === 'string' ? remaining.indexOf(target.filePath) : remaining.length;
+        if (insertIndex < 0)
+            insertIndex = remaining.length;
+        // Insert dragged in their current order
+        const next = [
+            ...remaining.slice(0, insertIndex),
+            ...draggedPaths,
+            ...remaining.slice(insertIndex)
+        ];
+        await this._context.workspaceState.update('trackedFiles', next);
+        this._refresh();
+    }
+}
+class BundlerGlobalDnD {
+    constructor(_context, _refresh) {
+        this._context = _context;
+        this._refresh = _refresh;
+        this.dropMimeTypes = [`application/vnd.code.tree.bundlerGlobal`];
+        this.dragMimeTypes = [`application/vnd.code.tree.bundlerGlobal`];
+    }
+    dispose() { }
+    handleDrag(source, dataTransfer) {
+        dataTransfer.set('application/vnd.code.tree.bundlerGlobal', new vscode.DataTransferItem(source));
+    }
+    async handleDrop(target, dataTransfer) {
+        const item = dataTransfer.get('application/vnd.code.tree.bundlerGlobal');
+        if (!item)
+            return;
+        const dragged = item.value;
+        if (!dragged || dragged.length === 0)
+            return;
+        const list = this._context.globalState.get('globalFiles', []);
+        const draggedPaths = dragged.map(d => d.filePath);
+        const remaining = list.filter(p => !draggedPaths.includes(p));
+        let insertIndex = typeof target?.filePath === 'string' ? remaining.indexOf(target.filePath) : remaining.length;
+        if (insertIndex < 0)
+            insertIndex = remaining.length;
+        const next = [...remaining.slice(0, insertIndex), ...draggedPaths, ...remaining.slice(insertIndex)];
+        await this._context.globalState.update('globalFiles', next);
+        this._refresh();
+    }
+}
+// Merged tree removed per design; merged content is shown via virtual document only.
+class MergedContentProvider {
+    constructor(_context) {
+        this._context = _context;
+        this._emitter = new vscode.EventEmitter();
+        this.onDidChange = this._emitter.event;
+        this.uri = vscode.Uri.parse('bundler:/Merged%20Content.md');
+    }
+    provideTextDocumentContent() {
+        const tracked = this._context.workspaceState.get('trackedFiles', []);
+        return computeMergedContent(this._context, tracked);
+    }
+    refresh() { this._emitter.fire(this.uri); }
+}
+class GlobalMergedContentProvider {
+    constructor(_context) {
+        this._context = _context;
+        this._emitter = new vscode.EventEmitter();
+        this.onDidChange = this._emitter.event;
+        this.uri = vscode.Uri.parse('bundler-global:/Global%20Merged.md');
+    }
+    provideTextDocumentContent() {
+        return computeGlobalMergedContent(this._context);
+    }
+    refresh() { this._emitter.fire(this.uri); }
+}
+function getRelativePath(filePath) {
+    const ws = vscode.workspace.workspaceFolders;
+    if (ws) {
+        for (const folder of ws) {
+            if (filePath.startsWith(folder.uri.fsPath)) {
+                return path.relative(folder.uri.fsPath, filePath);
+            }
+        }
+    }
+    return path.basename(filePath);
+}
+function getFilePathFromArg(arg) {
+    if (!arg)
+        return undefined;
+    if (typeof arg === 'string')
+        return arg;
+    const maybeUri = arg;
+    if (maybeUri && typeof maybeUri.fsPath === 'string' && typeof maybeUri.scheme === 'string') {
+        return maybeUri.fsPath;
+    }
+    const anyArg = arg;
+    if (anyArg.filePath && typeof anyArg.filePath === 'string')
+        return anyArg.filePath;
+    if (anyArg.resourceUri && anyArg.resourceUri.fsPath)
+        return anyArg.resourceUri.fsPath;
+    return undefined;
+}
+function makeBoxHeader(title) {
+    // Build middle first with exactly one space on each side, then size top/bottom by length
+    const innerTitle = String(title).trim();
+    const inner = ` ${innerTitle} `;
+    const top = '╭' + '─'.repeat(inner.length) + '╮';
+    const middle = '│' + inner + '│';
+    const bottom = '╰' + '─'.repeat(inner.length) + '╯';
+    return `${top}\n${middle}\n${bottom}\n`;
+}
+function computeMergedContent(context, trackedFiles) {
+    let merged = '';
+    const validTracked = [];
+    for (const f of trackedFiles) {
+        if (fs.existsSync(f)) {
+            if (trackedFiles.includes(f))
+                validTracked.push(f);
+            const content = fs.readFileSync(f, 'utf8');
+            const cleaned = stripEmptyLines(content);
+            if (!cleaned) {
+                continue; // skip empty-after-clean files entirely (no header)
+            }
+            const rel = getRelativePath(f);
+            merged += makeBoxHeader(`@${rel}`);
+            merged += cleaned + '\n';
+        }
+    }
+    if (validTracked.length !== trackedFiles.length) {
+        context.workspaceState.update('trackedFiles', validTracked);
+    }
+    return merged;
+}
+function computeGlobalMergedContent(context) {
+    let merged = '';
+    const list = context.globalState.get('globalFiles', []);
+    for (const f of list) {
+        if (!fs.existsSync(f))
+            continue;
+        const content = fs.readFileSync(f, 'utf8');
+        const cleaned = stripEmptyLines(content);
+        if (!cleaned)
+            continue;
+        const rel = getRelativePath(f);
+        merged += makeBoxHeader(`@${rel}`);
+        merged += cleaned + '\n';
+    }
+    return merged;
+}
+function stripEmptyLines(text) {
+    return text
+        .split(/\r?\n/)
+        .filter(line => line.trim() !== '')
+        .join('\n');
+}
+function delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+async function closeExistingMergedDiffs(mergedUris) {
+    const arr = Array.isArray(mergedUris) ? mergedUris : [mergedUris];
+    const set = new Set(arr.map(u => u.toString()));
+    const editors = vscode.window.visibleTextEditors.filter(e => set.has(e.document.uri.toString()));
+    for (const ed of editors) {
+        try {
+            await vscode.window.showTextDocument(ed.document, { viewColumn: ed.viewColumn, preview: false, preserveFocus: false });
+            await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+        }
+        catch { }
+    }
+}
+async function openOutputFile(context) {
+    const tracked = context.workspaceState.get('trackedFiles', []);
+    const merged = computeMergedContent(context, tracked);
+    let target = context.workspaceState.get('outputFile', '');
+    if (!target) {
+        const uri = await vscode.window.showSaveDialog({
+            filters: { 'Markdown': ['md'], 'Text': ['txt'], 'All Files': ['*'] },
+            saveLabel: 'Save Merged Content As'
+        });
+        if (!uri)
+            return;
+        target = uri.fsPath;
+        await context.workspaceState.update('outputFile', target);
+    }
+    try {
+        fs.writeFileSync(target, merged || '', 'utf8');
+    }
+    catch (e) {
+        console.error('Failed to write merged content:', e);
+    }
+    try {
+        const doc = await vscode.workspace.openTextDocument(target);
+        await vscode.window.showTextDocument(doc);
+    }
+    catch (e) {
+        console.error('Failed to open merged file:', e);
+    }
+}
+function deactivate() { }
+exports.deactivate = deactivate;
+//# sourceMappingURL=extension.js.map
