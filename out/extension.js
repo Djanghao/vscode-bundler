@@ -14,11 +14,38 @@ function activate(context) {
     const globalDnd = new BundlerGlobalDnD(context, () => refreshAll());
     const globalView = vscode.window.createTreeView('bundlerGlobal', { treeDataProvider: globalProvider, dragAndDropController: globalDnd, canSelectMany: true });
     context.subscriptions.push(trackedView, dnd, globalView, globalDnd);
+    const updateLinkedFile = () => {
+        const linkedFilePath = context.workspaceState.get('linkedMergedFile', '');
+        if (linkedFilePath) {
+            try {
+                const tracked = context.workspaceState.get('trackedFiles', []);
+                const mergedContent = computeMergedContent(context, tracked);
+                fs.writeFileSync(linkedFilePath, mergedContent || '', 'utf8');
+            }
+            catch (e) {
+                console.error('Failed to update linked file:', e);
+            }
+        }
+    };
+    const updateLinkedGlobalFile = () => {
+        const linkedFilePath = context.globalState.get('linkedGlobalMergedFile', '');
+        if (linkedFilePath) {
+            try {
+                const globalMergedContent = computeGlobalMergedContent(context);
+                fs.writeFileSync(linkedFilePath, globalMergedContent || '', 'utf8');
+            }
+            catch (e) {
+                console.error('Failed to update linked global file:', e);
+            }
+        }
+    };
     const refreshAll = () => {
         trackedProvider.refresh();
         globalProvider.refresh();
         mergedVirtualProvider.refresh();
         globalMergedVirtualProvider.refresh();
+        updateLinkedFile();
+        updateLinkedGlobalFile();
         try {
             const trackedCount = context.workspaceState.get('trackedFiles', []).length;
             const globalCount = context.globalState.get('globalFiles', []).length;
@@ -61,6 +88,43 @@ function activate(context) {
         if (changed) {
             await context.workspaceState.update('trackedFiles', list);
             refreshAll();
+        }
+    }));
+    // Add tracked files (file picker)
+    context.subscriptions.push(vscode.commands.registerCommand('bundler.addTrackedFiles', async () => {
+        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        if (!workspaceFolder) {
+            vscode.window.showErrorMessage('No workspace folder is open');
+            return;
+        }
+        const fileUris = await vscode.window.showOpenDialog({
+            canSelectMany: true,
+            canSelectFiles: true,
+            canSelectFolders: false,
+            defaultUri: workspaceFolder.uri,
+            openLabel: 'Add to Tracked Files'
+        });
+        if (!fileUris || fileUris.length === 0)
+            return;
+        const list = context.workspaceState.get('trackedFiles', []);
+        let changed = false;
+        for (const fileUri of fileUris) {
+            const fp = fileUri.fsPath;
+            const ws = vscode.workspace.getWorkspaceFolder(fileUri);
+            if (!ws)
+                continue;
+            if (!list.includes(fp)) {
+                list.push(fp);
+                changed = true;
+            }
+        }
+        if (changed) {
+            await context.workspaceState.update('trackedFiles', list);
+            refreshAll();
+            vscode.window.showInformationMessage(`Added ${fileUris.length} file(s) to tracked list`);
+        }
+        else {
+            vscode.window.showInformationMessage('No new files were added (files already tracked)');
         }
     }));
     // Add to global from Explorer (multi-select supported)
@@ -142,16 +206,37 @@ function activate(context) {
         if (!fp)
             return;
         try {
-            // Close any existing merged diff tabs to keep one at a time
-            await closeExistingMergedDiffs([mergedVirtualProvider.uri, globalMergedVirtualProvider.uri]);
             const globalList = context.globalState.get('globalFiles', []);
+            const trackedList = context.workspaceState.get('trackedFiles', []);
+            const linkedMergedFile = context.workspaceState.get('linkedMergedFile', '');
+            const linkedGlobalMergedFile = context.globalState.get('linkedGlobalMergedFile', '');
             const useGlobal = globalList.includes(fp);
-            const rightUri = useGlobal ? globalMergedVirtualProvider.uri : mergedVirtualProvider.uri;
-            // Prepare merged content and compute target on right
-            if (useGlobal)
+            const isTracked = trackedList.includes(fp);
+            let rightUri;
+            let rightTitle;
+            // If it's a tracked file and we have a linked merged file, use the linked file
+            if (isTracked && linkedMergedFile && fs.existsSync(linkedMergedFile)) {
+                rightUri = vscode.Uri.file(linkedMergedFile);
+                rightTitle = 'Linked Merged';
+            }
+            else if (useGlobal && linkedGlobalMergedFile && fs.existsSync(linkedGlobalMergedFile)) {
+                // If it's a global file and we have a linked global merged file, use the linked file
+                rightUri = vscode.Uri.file(linkedGlobalMergedFile);
+                rightTitle = 'Linked Global';
+            }
+            else if (useGlobal) {
+                rightUri = globalMergedVirtualProvider.uri;
+                rightTitle = 'Global';
                 globalMergedVirtualProvider.refresh();
-            else
+            }
+            else {
+                rightUri = mergedVirtualProvider.uri;
+                rightTitle = 'Merged';
                 mergedVirtualProvider.refresh();
+            }
+            // Close any existing merged diff tabs to keep one at a time
+            await closeExistingMergedDiffs([mergedVirtualProvider.uri, globalMergedVirtualProvider.uri, rightUri]);
+            // Prepare merged content and compute target position on right
             const mergedDoc = await vscode.workspace.openTextDocument(rightUri);
             const rel = getRelativePath(fp);
             const marker = `│ @${rel} │`;
@@ -159,13 +244,12 @@ function activate(context) {
             const idx = text.indexOf(marker);
             const targetLine = idx >= 0 ? mergedDoc.positionAt(idx).line : 0;
             const left = vscode.Uri.file(fp);
-            const right = rightUri;
-            const title = `${path.basename(fp)} ↔ ${useGlobal ? 'Global' : 'Merged'}`;
-            await vscode.commands.executeCommand('vscode.diff', left, right, title, { preview: false, preserveFocus: false });
-            // Reveal both sides to their corresponding starts for this file (use editors directly for accuracy)
+            const title = `${path.basename(fp)} ↔ ${rightTitle}`;
+            await vscode.commands.executeCommand('vscode.diff', left, rightUri, title, { preview: false, preserveFocus: false });
+            // Reveal both sides to their corresponding positions
             await delay(150);
             const leftEditor = vscode.window.visibleTextEditors.find(e => e.document.uri.toString() === left.toString());
-            const rightEditor = vscode.window.visibleTextEditors.find(e => e.document.uri.toString() === right.toString());
+            const rightEditor = vscode.window.visibleTextEditors.find(e => e.document.uri.toString() === rightUri.toString());
             if (rightEditor) {
                 const posR = new vscode.Position(targetLine, 0);
                 rightEditor.revealRange(new vscode.Range(posR, posR), vscode.TextEditorRevealType.AtTop);
@@ -213,23 +297,119 @@ function activate(context) {
         const doc = await vscode.workspace.openTextDocument(uri);
         await vscode.window.showTextDocument(doc, { preview: false });
     }));
+    // Link merged file
+    context.subscriptions.push(vscode.commands.registerCommand('bundler.linkMergedFile', async () => {
+        const currentLinkedFile = context.workspaceState.get('linkedMergedFile', '');
+        let defaultPath = currentLinkedFile;
+        if (!defaultPath) {
+            const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+            if (workspaceFolder) {
+                defaultPath = path.join(workspaceFolder.uri.fsPath, 'merged-content.md');
+            }
+        }
+        const uri = await vscode.window.showSaveDialog({
+            filters: { 'Markdown': ['md'], 'Text': ['txt'], 'All Files': ['*'] },
+            saveLabel: 'Link Merged File',
+            defaultUri: defaultPath ? vscode.Uri.file(defaultPath) : undefined
+        });
+        if (!uri)
+            return;
+        const filePath = uri.fsPath;
+        await context.workspaceState.update('linkedMergedFile', filePath);
+        // Write current merged content to the file
+        const tracked = context.workspaceState.get('trackedFiles', []);
+        const mergedContent = computeMergedContent(context, tracked);
+        try {
+            fs.writeFileSync(filePath, mergedContent || '', 'utf8');
+            vscode.window.showInformationMessage(`Merged file linked to: ${path.basename(filePath)}`);
+        }
+        catch (e) {
+            vscode.window.showErrorMessage(`Failed to write to linked file: ${e}`);
+        }
+    }));
+    // Link global merged file
+    context.subscriptions.push(vscode.commands.registerCommand('bundler.linkGlobalMergedFile', async () => {
+        const currentLinkedFile = context.globalState.get('linkedGlobalMergedFile', '');
+        let defaultPath = currentLinkedFile;
+        if (!defaultPath) {
+            const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+            if (workspaceFolder) {
+                defaultPath = path.join(workspaceFolder.uri.fsPath, 'global-merged-content.md');
+            }
+            else {
+                defaultPath = path.join(context.globalStorageUri.fsPath, 'global-merged-content.md');
+            }
+        }
+        const uri = await vscode.window.showSaveDialog({
+            filters: { 'Markdown': ['md'], 'Text': ['txt'], 'All Files': ['*'] },
+            saveLabel: 'Link Global Merged File',
+            defaultUri: defaultPath ? vscode.Uri.file(defaultPath) : undefined
+        });
+        if (!uri)
+            return;
+        const filePath = uri.fsPath;
+        await context.globalState.update('linkedGlobalMergedFile', filePath);
+        // Write current global merged content to the file
+        const globalMergedContent = computeGlobalMergedContent(context);
+        try {
+            fs.writeFileSync(filePath, globalMergedContent || '', 'utf8');
+            vscode.window.showInformationMessage(`Global merged file linked to: ${path.basename(filePath)}`);
+        }
+        catch (e) {
+            vscode.window.showErrorMessage(`Failed to write to global linked file: ${e}`);
+        }
+    }));
+    // Unlink merged file
+    context.subscriptions.push(vscode.commands.registerCommand('bundler.unlinkMergedFile', async () => {
+        const linkedFile = context.workspaceState.get('linkedMergedFile', '');
+        if (!linkedFile) {
+            vscode.window.showInformationMessage('No merged file is currently linked');
+            return;
+        }
+        const result = await vscode.window.showWarningMessage(`Unlink merged file: ${path.basename(linkedFile)}?`, { modal: true }, 'Unlink');
+        if (result === 'Unlink') {
+            await context.workspaceState.update('linkedMergedFile', '');
+            vscode.window.showInformationMessage(`Merged file unlinked: ${path.basename(linkedFile)}`);
+        }
+    }));
+    // Unlink global merged file
+    context.subscriptions.push(vscode.commands.registerCommand('bundler.unlinkGlobalMergedFile', async () => {
+        const linkedFile = context.globalState.get('linkedGlobalMergedFile', '');
+        if (!linkedFile) {
+            vscode.window.showInformationMessage('No global merged file is currently linked');
+            return;
+        }
+        const result = await vscode.window.showWarningMessage(`Unlink global merged file: ${path.basename(linkedFile)}?`, { modal: true }, 'Unlink');
+        if (result === 'Unlink') {
+            await context.globalState.update('linkedGlobalMergedFile', '');
+            vscode.window.showInformationMessage(`Global merged file unlinked: ${path.basename(linkedFile)}`);
+        }
+    }));
     // Live updates when tracked/global files change in editor
     context.subscriptions.push(vscode.workspace.onDidChangeTextDocument(e => {
         const tracked = context.workspaceState.get('trackedFiles', []);
         const global = context.globalState.get('globalFiles', []);
         const fp = e.document.uri.fsPath;
-        if (tracked.includes(fp))
+        if (tracked.includes(fp)) {
             mergedVirtualProvider.refresh();
-        if (global.includes(fp))
+            updateLinkedFile();
+        }
+        if (global.includes(fp)) {
             globalMergedVirtualProvider.refresh();
+            updateLinkedGlobalFile();
+        }
     }), vscode.workspace.onDidSaveTextDocument(doc => {
         const tracked = context.workspaceState.get('trackedFiles', []);
         const global = context.globalState.get('globalFiles', []);
         const fp = doc.uri.fsPath;
-        if (tracked.includes(fp))
+        if (tracked.includes(fp)) {
             mergedVirtualProvider.refresh();
-        if (global.includes(fp))
+            updateLinkedFile();
+        }
+        if (global.includes(fp)) {
             globalMergedVirtualProvider.refresh();
+            updateLinkedGlobalFile();
+        }
     }));
 }
 exports.activate = activate;
